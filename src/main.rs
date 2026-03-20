@@ -253,7 +253,14 @@ async fn run_app(
                                                 let browser_cmd = config.browser.clone();
                                                 tokio::task::spawn_blocking(move || {
                                                     if let Ok(Some(html)) = mail::preview::extract_html(&path) {
-                                                        let temp_path = std::env::temp_dir().join(format!("mq-{}.html", message_id));
+                                                        use sha2::{Sha256, Digest};
+                                                        let mut hasher = Sha256::new();
+                                                        hasher.update(message_id.as_bytes());
+                                                        let hash = format!("{:x}", hasher.finalize());
+                                                        // Truncate hash to 16 chars for cleaner temp files
+                                                        let safe_filename = format!("mq-{}.html", &hash[..16]);
+                                                        
+                                                        let temp_path = std::env::temp_dir().join(safe_filename);
                                                         if std::fs::write(&temp_path, html).is_ok() {
                                                             if let Some(cmd_str) = browser_cmd {
                                                                 let mut parts = cmd_str.split_whitespace();
@@ -285,6 +292,13 @@ async fn run_app(
                                         chars.remove(state.search_cursor - 1);
                                         state.search_query = chars.into_iter().collect();
                                         state.search_cursor -= 1;
+                                    }
+                                }
+                                KeyCode::Delete => {
+                                    if state.is_searching && state.search_cursor < state.search_query.chars().count(){
+                                        let mut chars: Vec<char> = state.search_query.chars().collect();
+                                        chars.remove(state.search_cursor);
+                                        state.search_query = chars.into_iter().collect();
                                     }
                                 }
                                 KeyCode::Left => {
