@@ -55,7 +55,7 @@ pub fn draw(f: &mut Frame, state: &mut UiState) {
 
     let search_block = Block::default()
         .borders(Borders::ALL)
-        .title(" Search (/) ")
+        .title(if state.is_searching { " Search (Press Enter to view results) " } else { " Search (/) " })
         .border_style(if state.is_searching { active_border } else { inactive_border });
 
     let mut query_spans = Vec::new();
@@ -106,8 +106,12 @@ pub fn draw(f: &mut Frame, state: &mut UiState) {
         
     let list = List::new(items)
         .block(list_block)
-        .highlight_symbol("> ")
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .highlight_symbol(if state.is_searching { "  " } else { "> " })
+        .highlight_style(if state.is_searching {
+            Style::default().fg(Color::DarkGray).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::REVERSED).add_modifier(Modifier::BOLD)
+        });
 
     f.render_stateful_widget(list, main_chunks[0], &mut state.list_state);
 
