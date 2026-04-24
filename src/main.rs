@@ -9,6 +9,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+
 pub mod config;
 pub mod events;
 pub mod mail;
@@ -72,12 +73,12 @@ async fn run_app(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<AppMessage>();
 
     // Send initial search
-    if !state.search_query.is_empty() {
-        let q = state.search_query.clone();
+    let initial_query = state.search_query();
+    if !initial_query.is_empty() {
         let s = searcher.clone();
         let t = tx.clone();
         tokio::task::spawn_blocking(move || {
-            if let Ok(results) = s.search(&q, limit) {
+            if let Ok(results) = s.search(&initial_query, limit) {
                 let _ = t.send(AppMessage::SearchResults(results));
             }
         });
@@ -85,7 +86,7 @@ async fn run_app(
 
     let mut search_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut preview_task: Option<tokio::task::JoinHandle<()>> = None;
-    let mut last_query = state.search_query.clone();
+    let mut last_query = state.search_query();
 
     loop {
         terminal.draw(|f| ui::draw(f, state))?;
@@ -120,35 +121,8 @@ async fn run_app(
                             if key.modifiers.contains(KeyModifiers::CONTROL) {
                                 match key.code {
                                     KeyCode::Char('c') => return Ok(()),
-                                    KeyCode::Char('w') => {
-                                        if state.is_searching && state.search_cursor > 0 {
-                                            let s = state.search_query.clone();
-                                            let chars: Vec<char> = s.chars().collect();
-                                            let mut idx = state.search_cursor - 1;
-                                            while idx > 0 && chars[idx].is_whitespace() {
-                                                idx -= 1;
-                                            }
-                                            while idx > 0 && !chars[idx-1].is_whitespace() {
-                                                idx -= 1;
-                                            }
-
-                                            let mut new_chars = Vec::new();
-                                            for (i, c) in chars.iter().enumerate() {
-                                                if i < idx || i >= state.search_cursor {
-                                                    new_chars.push(*c);
-                                                }
-                                            }
-                                            state.search_query = new_chars.into_iter().collect();
-                                            state.search_cursor = idx;
-                                        }
-                                    }
                                     KeyCode::Char('d') => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            // Forward delete (delete character under cursor)
-                                            let mut chars: Vec<char> = state.search_query.chars().collect();
-                                            chars.remove(state.search_cursor);
-                                            state.search_query = chars.into_iter().collect();
-                                        } else if !state.is_searching {
+                                        if !state.is_searching {
                                             if let Some(idx) = state.selected_index {
                                                 let new_idx = (idx + 10).min(state.results.len().saturating_sub(1));
                                                 if new_idx != idx {
@@ -158,21 +132,13 @@ async fn run_app(
                                                     trigger_preview(&state.results[new_idx].path, &tx, &mut preview_task);
                                                 }
                                             }
+                                        } else {
+                                            // Let tui-input handle Ctrl+d in search mode (delete forward)
+                                            state.search_input.handle(tui_input::InputRequest::DeleteNextChar);
                                         }
                                     }
                                     KeyCode::Char('u') => {
-                                        if state.is_searching {
-                                            // Clear from cursor to beginning of line
-                                            let chars: Vec<char> = state.search_query.chars().collect();
-                                            let mut new_chars = Vec::new();
-                                            for (i, c) in chars.iter().enumerate() {
-                                                if i >= state.search_cursor {
-                                                    new_chars.push(*c);
-                                                }
-                                            }
-                                            state.search_query = new_chars.into_iter().collect();
-                                            state.search_cursor = 0;
-                                        } else {
+                                        if !state.is_searching {
                                             if let Some(idx) = state.selected_index {
                                                 let new_idx = idx.saturating_sub(10);
                                                 if new_idx != idx {
@@ -182,53 +148,67 @@ async fn run_app(
                                                     trigger_preview(&state.results[new_idx].path, &tx, &mut preview_task);
                                                 }
                                             }
+                                        } else {
+                                            // Let tui-input handle Ctrl+u in search mode (clear to start)
+                                            state.search_input.handle(tui_input::InputRequest::DeleteLine);
                                         }
                                     }
                                     KeyCode::Char('f') => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            state.search_cursor += 1;
-                                        } else if !state.is_searching && state.selected_preview.is_some() {
+                                        if !state.is_searching && state.selected_preview.is_some() {
                                             state.preview_scroll_y = state.preview_scroll_y.saturating_add(10);
+                                        } else if state.is_searching {
+                                            // Let tui-input handle Ctrl+f in search mode (move forward one char)
+                                            state.search_input.handle(tui_input::InputRequest::GoToNextChar);
                                         }
                                     }
                                     KeyCode::Char('b') => {
-                                        if state.is_searching && state.search_cursor > 0 {
-                                            state.search_cursor -= 1;
-                                        } else if !state.is_searching && state.selected_preview.is_some() {
+                                        if !state.is_searching && state.selected_preview.is_some() {
                                             state.preview_scroll_y = state.preview_scroll_y.saturating_sub(10);
+                                        } else if state.is_searching {
+                                            // Let tui-input handle Ctrl+b in search mode (move backward one char)
+                                            state.search_input.handle(tui_input::InputRequest::GoToPrevChar);
                                         }
                                     }
-                                    KeyCode::Char('a') => {
+                                    KeyCode::Char('h') => {
                                         if state.is_searching {
-                                            state.search_cursor = 0;
+                                            // Let tui-input handle Ctrl+h in search mode (backspace)
+                                            state.search_input.handle(tui_input::InputRequest::DeletePrevChar);
                                         }
                                     }
-                                    KeyCode::Char('e') => {
+                                    KeyCode::Char('n') => {
                                         if state.is_searching {
-                                            state.search_cursor = state.search_query.chars().count();
+                                            // Move from search box to results list
+                                            state.is_searching = false;
+                                        } else if let Some(idx) = state.selected_index {
+                                            // Navigate down in results (same as 'j')
+                                            if idx + 1 < state.results.len() {
+                                                state.selected_index = Some(idx + 1);
+                                                state.preview_scroll_y = 0;
+                                                state.preview_scroll_x = 0;
+                                                trigger_preview(&state.results[idx + 1].path, &tx, &mut preview_task);
+                                            }
                                         }
                                     }
-                                    KeyCode::Char('k') => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            // Clear from cursor to end of line
-                                            let chars: Vec<char> = state.search_query.chars().collect();
-                                            let mut new_chars = Vec::new();
-                                            for (i, c) in chars.iter().enumerate() {
-                                                if i < state.search_cursor {
-                                                    new_chars.push(*c);
+                                    KeyCode::Char('p') => {
+                                        if !state.is_searching {
+                                            // Navigate up in results (same as 'k')
+                                            if let Some(idx) = state.selected_index {
+                                                if idx > 0 {
+                                                    state.selected_index = Some(idx - 1);
+                                                    state.preview_scroll_y = 0;
+                                                    state.preview_scroll_x = 0;
+                                                    trigger_preview(&state.results[idx - 1].path, &tx, &mut preview_task);
+                                                } else {
+                                                    // At top of results, move back to search view
+                                                    state.is_searching = true;
                                                 }
                                             }
-                                            state.search_query = new_chars.into_iter().collect();
                                         }
                                     }
-                                    KeyCode::Left => {
-                                        if state.is_searching && state.search_cursor > 0 {
-                                            state.search_cursor = jump_word_left(&state.search_query, state.search_cursor);
-                                        }
-                                    }
-                                    KeyCode::Right => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            state.search_cursor = jump_word_right(&state.search_query, state.search_cursor);
+                                    KeyCode::Char('w') => {
+                                        if state.is_searching {
+                                            // Let tui-input handle Ctrl+w in search mode (delete previous word)
+                                            state.search_input.handle(tui_input::InputRequest::DeletePrevWord);
                                         }
                                     }
                                     _ => {}
@@ -236,35 +216,18 @@ async fn run_app(
                             } else if key.modifiers.contains(KeyModifiers::ALT) {
                                 match key.code {
                                     KeyCode::Char('b') => {
-                                        if state.is_searching && state.search_cursor > 0 {
-                                            state.search_cursor = jump_word_left(&state.search_query, state.search_cursor);
+                                        if state.is_searching {
+                                            state.search_input.handle(tui_input::InputRequest::GoToPrevWord);
                                         }
                                     }
                                     KeyCode::Char('f') => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            state.search_cursor = jump_word_right(&state.search_query, state.search_cursor);
+                                        if state.is_searching {
+                                            state.search_input.handle(tui_input::InputRequest::GoToNextWord);
                                         }
                                     }
                                     KeyCode::Char('d') => {
-                                        if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                            let chars: Vec<char> = state.search_query.chars().collect();
-                                            let mut idx = state.search_cursor;
-                                            // Skip whitespace
-                                            while idx < chars.len() && chars[idx].is_whitespace() {
-                                                idx += 1;
-                                            }
-                                            // Skip word characters
-                                            while idx < chars.len() && !chars[idx].is_whitespace() {
-                                                idx += 1;
-                                            }
-                                            // Remove characters from cursor to idx
-                                            let mut new_chars = Vec::new();
-                                            for (i, c) in chars.iter().enumerate() {
-                                                if i < state.search_cursor || i >= idx {
-                                                    new_chars.push(*c);
-                                                }
-                                            }
-                                            state.search_query = new_chars.into_iter().collect();
+                                        if state.is_searching {
+                                            state.search_input.handle(tui_input::InputRequest::DeleteNextWord);
                                         }
                                     }
                                     _ => {}
@@ -284,10 +247,8 @@ async fn run_app(
                                 }
                                 KeyCode::Char(c) => {
                                     if state.is_searching {
-                                        let mut chars: Vec<char> = state.search_query.chars().collect();
-                                        chars.insert(state.search_cursor, c);
-                                        state.search_query = chars.into_iter().collect();
-                                        state.search_cursor += 1;
+                                        // Use tui-input for character insertion
+                                        state.search_input.handle(tui_input::InputRequest::InsertChar(c));
                                     } else if c == 'q' {
                                         if state.show_help {
                                             state.show_help = false;
@@ -376,38 +337,33 @@ async fn run_app(
                                     }
                                 }
                                 KeyCode::Backspace => {
-                                    if state.is_searching && state.search_cursor > 0 {
-                                        let mut chars: Vec<char> = state.search_query.chars().collect();
-                                        chars.remove(state.search_cursor - 1);
-                                        state.search_query = chars.into_iter().collect();
-                                        state.search_cursor -= 1;
+                                    if state.is_searching {
+                                        state.search_input.handle(tui_input::InputRequest::DeletePrevChar);
                                     }
                                 }
                                 KeyCode::Delete => {
-                                    if state.is_searching && state.search_cursor < state.search_query.chars().count(){
-                                        let mut chars: Vec<char> = state.search_query.chars().collect();
-                                        chars.remove(state.search_cursor);
-                                        state.search_query = chars.into_iter().collect();
+                                    if state.is_searching {
+                                        state.search_input.handle(tui_input::InputRequest::DeleteNextChar);
                                     }
                                 }
                                 KeyCode::Left => {
-                                    if state.is_searching && state.search_cursor > 0 {
-                                        state.search_cursor -= 1;
+                                    if state.is_searching {
+                                        state.search_input.handle(tui_input::InputRequest::GoToPrevChar);
                                     }
                                 }
                                 KeyCode::Right => {
-                                    if state.is_searching && state.search_cursor < state.search_query.chars().count() {
-                                        state.search_cursor += 1;
+                                    if state.is_searching {
+                                        state.search_input.handle(tui_input::InputRequest::GoToNextChar);
                                     }
                                 }
                                 KeyCode::Home => {
                                     if state.is_searching {
-                                        state.search_cursor = 0;
+                                        state.search_input.handle(tui_input::InputRequest::GoToStart);
                                     }
                                 }
                                 KeyCode::End => {
                                     if state.is_searching {
-                                        state.search_cursor = state.search_query.chars().count();
+                                        state.search_input.handle(tui_input::InputRequest::GoToEnd);
                                     }
                                 }
                                 KeyCode::Down => {
@@ -422,7 +378,7 @@ async fn run_app(
                                         }
                                     } else {
                                             state.is_searching = false
-                                        }
+                                    }
                                 }
                                 KeyCode::Up => {
                                     if !state.is_searching {
@@ -433,8 +389,8 @@ async fn run_app(
                                                 state.preview_scroll_x = 0;
                                                 trigger_preview(&state.results[idx - 1].path, &tx, &mut preview_task);
                                             } else {
-                                                    state.is_searching = true
-                                                }
+                                                state.is_searching = true
+                                            }
                                         }
                                     }
                                 }
@@ -489,20 +445,20 @@ async fn run_app(
                         }
                     }
                     AppEvent::Tick => {
-                        if state.search_query != last_query {
-                            last_query = state.search_query.clone();
+                        let current_query = state.search_query();
+                        if current_query != last_query {
+                            last_query = current_query.clone();
                             if let Some(task) = search_task.take() {
                                 task.abort();
                             }
 
-                            let q = state.search_query.clone();
                             let s = searcher.clone();
                             let t = tx.clone();
 
                             search_task = Some(tokio::spawn(async move {
                                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                                 let res = tokio::task::spawn_blocking(move || {
-                                    s.search(&q, limit)
+                                    s.search(&current_query, limit)
                                 }).await;
 
                                 if let Ok(Ok(results)) = res {
@@ -516,35 +472,6 @@ async fn run_app(
             }
         }
     }
-}
-
-fn jump_word_left(s: &str, mut idx: usize) -> usize {
-    if idx == 0 {
-        return 0;
-    }
-    let chars: Vec<char> = s.chars().collect();
-    idx -= 1;
-    while idx > 0 && chars[idx].is_whitespace() {
-        idx -= 1;
-    }
-    while idx > 0 && !chars[idx - 1].is_whitespace() {
-        idx -= 1;
-    }
-    idx
-}
-
-fn jump_word_right(s: &str, mut idx: usize) -> usize {
-    let chars: Vec<char> = s.chars().collect();
-    if idx >= chars.len() {
-        return chars.len();
-    }
-    while idx < chars.len() && chars[idx].is_whitespace() {
-        idx += 1;
-    }
-    while idx < chars.len() && !chars[idx].is_whitespace() {
-        idx += 1;
-    }
-    idx
 }
 
 fn trigger_preview(

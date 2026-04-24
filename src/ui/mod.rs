@@ -1,15 +1,15 @@
 use crate::mail::EmailMetadata;
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
     Frame,
 };
+use tui_input::Input;
 
 pub struct UiState {
-    pub search_query: String,
-    pub search_cursor: usize,
+    pub search_input: Input,
     pub is_searching: bool,
     pub results: Vec<EmailMetadata>,
     pub selected_index: Option<usize>,
@@ -26,10 +26,8 @@ pub struct UiState {
 impl UiState {
     pub fn new(initial_query: Option<String>) -> Self {
         let query = initial_query.unwrap_or_default();
-        let cursor = query.chars().count();
         Self {
-            search_query: query,
-            search_cursor: cursor,
+            search_input: Input::new(query),
             is_searching: true,
             results: Vec::new(),
             selected_index: None,
@@ -42,6 +40,11 @@ impl UiState {
             show_help: false,
             list_state: ListState::default(),
         }
+    }
+
+    /// Get the current search query as a string
+    pub fn search_query(&self) -> String {
+        self.search_input.value().to_string()
     }
 }
 
@@ -67,27 +70,25 @@ pub fn draw(f: &mut Frame, state: &mut UiState) {
             inactive_border
         });
 
-    let mut query_spans = Vec::new();
-    for (i, c) in state.search_query.chars().enumerate() {
-        if state.is_searching && i == state.search_cursor {
-            query_spans.push(Span::styled(
-                c.to_string(),
-                Style::default().add_modifier(Modifier::REVERSED),
-            ));
-        } else {
-            query_spans.push(Span::raw(c.to_string()));
-        }
-    }
-    if state.is_searching && state.search_cursor == state.search_query.chars().count() {
-        query_spans.push(Span::styled(
-            " ",
-            Style::default().add_modifier(Modifier::REVERSED),
-        ));
-    }
-
-    let search_text = Paragraph::new(Line::from(query_spans)).block(search_block);
+    // Use tui-input's cursor display for search box
+    let search_text = if state.is_searching {
+        Paragraph::new(state.search_input.value())
+            .block(search_block)
+            .scroll((0, state.search_input.visual_scroll(chunks[0].width as usize - 2) as u16))
+    } else {
+        Paragraph::new(state.search_input.value()).block(search_block)
+    };
 
     f.render_widget(search_text, chunks[0]);
+
+    // Set cursor position when in search mode
+    if state.is_searching {
+        let scroll_offset = state.search_input.visual_scroll(chunks[0].width as usize - 2);
+        let cursor_offset = (state.search_input.cursor() - scroll_offset) as u16;
+        let cursor_x = chunks[0].x + 1 + cursor_offset.min(chunks[0].width - 2);
+        let cursor_y = chunks[0].y + 1;
+        f.set_cursor_position(Position::new(cursor_x, cursor_y));
+    }
 
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -233,15 +234,31 @@ pub fn draw(f: &mut Frame, state: &mut UiState) {
             Line::from("  Ctrl+d/u     : Jump down/up 10 items"),
             Line::from("  PgDn/PgUp    : Scroll preview pane down/up"),
             Line::from("  Ctrl+f/b     : Scroll preview pane down/up (result view)"),
-            Line::from("  Ctrl+f/b     : Move forward/backward one character (search mode)"),
-            Line::from("  Ctrl+a/e     : Go to start/end of search box"),
-            Line::from("  Alt+f/b      : Move by word in search box"),
-            Line::from("  Alt+d        : Delete forward word in search box"),
-            Line::from("  Ctrl+d       : Delete character under cursor (search mode)"),
-            Line::from("  Ctrl+u/k     : Clear to start/end of line (search mode)"),
-            Line::from("  Ctrl+w       : Delete backward word in search box"),
-            Line::from("  Ctrl+Left/Right: Move by word in search box"),
-            Line::from("  Home/End     : Go to start/end of search box"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "SEARCH BOX (GNU Readline bindings)",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("  Ctrl+a/e     : Go to start/end of line"),
+            Line::from("  Ctrl+b/f     : Move backward/forward one character"),
+            Line::from("  Alt+b/f      : Move backward/forward one word"),
+            Line::from("  Ctrl+d       : Delete character under cursor"),
+            Line::from("  Backspace    : Delete character before cursor"),
+            Line::from("  Alt+d        : Delete forward word"),
+            Line::from("  Ctrl+w       : Delete backward word"),
+            Line::from("  Ctrl+u       : Clear to start of line"),
+            Line::from("  Ctrl+k       : Clear to end of line"),
+            Line::from("  Home/End     : Go to start/end of line"),
+            Line::from("  Left/Right   : Move cursor left/right"),
+            Line::from(""),
+            Line::from(vec![Span::styled(
+                "GENERAL",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )]),
             Line::from("  o            : Open HTML version in browser"),
             Line::from("  f            : Show aerc folder info"),
             Line::from("  H            : Show important mail headers"),

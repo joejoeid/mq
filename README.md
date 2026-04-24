@@ -1,6 +1,6 @@
 # mq (mail query)
 
-`mq` is a fast, lightweight, read-only terminal application for querying and viewing emails from a `notmuch` database. It is designed around vim-style keybindings and acts as a specialized search tool built to complement existing terminal email clients like `aerc` or `mutt`.
+`mq` is a fast, lightweight, read-only terminal application for querying and viewing emails from a `notmuch` database. It is designed around GNU readline keybindings and acts as a specialized search tool built to complement existing terminal email clients like `aerc` or `mutt`.
 
 ## Features
 
